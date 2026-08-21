@@ -1,48 +1,52 @@
-import io
 import os
-from fastapi import FastAPI, File, UploadFile, HTTPException
-from PIL import Image
+from fastapi import FastAPI, File, HTTPException, UploadFile
+import numpy as np
+import cv2
 from rapidocr_onnxruntime import RapidOCR
 
-app = FastAPI(title="RapidOCR Service")
+app = FastAPI(title="RapidOCR Traditional Chinese Service")
 
-# 載入自訂繁體模型與字典檔
-rec_model_path = os.path.join("models", "chinese_cht_PP-OCRv3_rec.onnx")
-rec_keys_path = os.path.join("models", "chinese_cht_dict.txt")
+# 直接指向繁體模型與字典
+REC_MODEL = os.path.join("models", "chinese_cht_PP-OCRv3_rec.onnx")
+REC_KEYS = os.path.join("models", "chinese_cht_dict.txt")
 
-engine = RapidOCR(
-    rec_model_path=rec_model_path,
-    rec_keys_path=rec_keys_path
+ocr = RapidOCR(
+    rec_model_path=REC_MODEL,
+    rec_keys_path=REC_KEYS,
 )
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
 
-@app.post("/ocr")
-async def process_ocr(file: UploadFile = File(...)):
-    if not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Uploaded file is not an image.")
-    
-    try:
-        contents = await file.read()
-        image = Image.open(io.BytesIO(contents)).convert("RGB")
-        result, elapse_list = engine(image)
-        
-        # 整理輸出格式
-        formatted_result = []
-        if result:
-            for item in result:
-                formatted_result.append({
-                    "box": item[0],
-                    "text": item[1],
-                    "score": float(item[2])
-                })
-        
-        return {
-            "success": True,
-            "data": formatted_result,
-            "latency": elapse_list
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+@app.get("/")
+def health_check():
+  return {"status": "ok"}
+
+
+@app.post("/predict")
+async def predict(file: UploadFile = File(...)):
+  if not file.content_type.startswith("image/"):
+    raise HTTPException(status_code=400, detail="請上傳圖片檔案")
+
+  contents = await file.read()
+  nparr = np.frombuffer(contents, np.uint8)
+  img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+  if img is None:
+    raise HTTPException(status_code=400, detail="圖片解析失敗")
+
+  # det_limit_side_len=960 可避免大圖浪費推論時間
+  result, elapse = ocr(img, det_limit_side_len=960)
+
+  formatted_result = []
+  if result:
+    for item in result:
+      formatted_result.append({
+          "box": item[0],
+          "text": item[1],
+          "confidence": round(float(item[2]), 4),
+      })
+
+  return {
+      "text_count": len(formatted_result),
+      "elapse": elapse,
+      "data": formatted_result,
+  }
